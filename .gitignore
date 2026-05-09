@@ -1,0 +1,13 @@
+node_modules
+.next
+.turbo
+out
+.env
+.env.local
+.env.*.local
+*.log
+.DS_Store
+.claude-sessions
+.playwright
+.playwright-cli
+tsconfig.tsbuildinfo
