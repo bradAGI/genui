@@ -2,8 +2,11 @@
 
 ![Generative UI hero banner](public/banner.jpg)
 
-A web app where every screen is generated at runtime by Gemini 3 Flash.
-There are no pre-built pages — you type, the model renders the UI for the moment.
+A web app where every screen is generated at runtime by **Gemini 3 Flash**.
+There are no pre-built pages — you type or speak, the model renders the UI for the moment.
+
+Built for the **Generative UI Global Hackathon** (track: *No Designer, No Problem*).
+**Live repo:** https://github.com/bradAGI/genui
 
 ## The app
 
@@ -11,7 +14,7 @@ There are no pre-built pages — you type, the model renders the UI for the mome
 
 ## A single prompt → a full interactive UI
 
-Prompt: *"Plan a 3-day Tokyo trip for two on a $2k budget."* (10 seconds, 41 nodes:
+Prompt: *"Plan a 3-day Tokyo trip for two on a $2k budget."* (~10 seconds, ~40 nodes:
 heading, 4 stat tiles, 3-tab dayplanner, 6 cards, badges, pie chart, slider,
 recalculate-plan form — all generated.)
 
@@ -30,78 +33,73 @@ recalculate-plan form — all generated.)
 
 Avg: **25 rich components** vs **2.3 text nodes** per turn.
 
-Built for the **Generative UI Global Hackathon** (track: *No Designer, No Problem*).
-
 ## How it works
 
-1. The user types a request (or clicks a generated button).
-2. `/api/turn` spawns `claude -p --bare --json-schema <UI-DSL> --resume <session-id>`.
-3. Claude returns a JSON tree of UI nodes constrained to the DSL.
-4. The client renders the tree via a small React registry.
-5. Buttons and form submits POST back to `/api/turn` with their action + payload;
-   claude is resumed in the same session and renders the next screen.
+1. The user types or speaks (Web Speech API mic input) a request, or clicks a button on a previously-rendered screen.
+2. `/api/turn` POSTs the message (or `{action, payload}`) to Gemini 3 Flash via the v1beta `generateContent` endpoint, with `responseMimeType: "application/json"` and the strict render-only system prompt.
+3. Gemini returns a JSON tree of UI nodes; Zod validates it at the boundary, alias coercion repairs minor field-name drift, and the React renderer paints the tree.
+4. The new screen **replaces** the previous one in place — there's no chat scrollback. The UI itself is the conversation.
+5. Server-side, the session id keeps the model resumed across turns so it remembers prior context.
 
-The DSL covers ~16 node types (stack, grid, card, heading, text, badge, stat, button,
-input, textarea, select, slider, checkbox, form, chart, table, image, markdown, divider).
-For anything the DSL can't express, claude can drop a `{type:"html"}` node rendered
-in a sandboxed iframe — the open-generative-UI escape hatch.
+The DSL has 24 node types: `stack`, `grid`, `card`, `tabs`, `modal`, `heading`, `text`,
+`markdown`, `badge`, `stat`, `progress`, `icon`, `divider`, `image`, `button`, `input`,
+`textarea`, `select`, `slider`, `checkbox`, `form`, `chart`, `table`, `html`. The `html`
+node is rendered in a sandboxed iframe — the open-generative-UI escape hatch for anything
+the DSL can't express.
+
+## Live web grounding (default ON)
+
+The header has a `live web` / `model only` toggle. With grounding on (default), every
+turn carries Google's `google_search` tool — the model decides per-turn whether to fire
+it. Time-sensitive prompts ("trending papers today", "current weather") get fresh data
+plus clickable citation pills under the rendered UI; purely fictional prompts skip the
+search and run on training data alone. The header toggle lets users force model-only mode.
 
 ## Stack
 
-- Next.js 15 (App Router) + React 19
-- Tailwind v4
-- Recharts (charts)
-- `claude` CLI (Claude Code in `--bare --print` mode)
-- Zod → JSON Schema → `claude --json-schema` for structured output
-
-No CopilotKit, no Postgres, no Redis. The CLI is the runtime.
+- **Google DeepMind** — Gemini 3 Flash (`gemini-3-flash-preview`) via Generative Language API v1beta, plus Google Search grounding tool with `groundingMetadata` parsing for citations.
+- **Next.js 15** (App Router) + React 19 + Tailwind v4 + Recharts.
+- **Zod** for DSL validation; **Web Speech API** for mic input; **shot-scraper + Playwright** for end-to-end testing.
+- **A2UI v0.9** (research) — DSL component vocabulary aligned with the spec.
+- **AG-UI** (research) — event/payload pattern for the action contract.
+- No CopilotKit/LangChain/Postgres/Redis — deliberately lean. One server route + one renderer.
 
 ## Run
 
 ```bash
+git clone https://github.com/bradAGI/genui
+cd genui
 npm install
-npm run dev
-# open http://localhost:3010
+echo "GEMINI_API_KEY=your_key_here" > .env.local   # https://aistudio.google.com
+npm run dev                                         # http://localhost:3010
+# or for prod:
+npm run build && npm run start
 ```
 
-**Requirements**
+**Smoke tests** (validates the whole pipeline against the live API):
 
-- `claude` CLI on PATH, logged in (Anthropic subscription via `claude auth` or `ANTHROPIC_API_KEY` in env).
-- Optional: `GEMINI_API_KEY` in `.env` to use the Gemini provider toggle (defaults to `gemini-3-flash-preview`).
-
-The route uses `--dangerously-skip-permissions` and `--tools ""` together — all tools are
-disabled, so claude is constrained to producing JSON output only. No filesystem access, no shell.
-
-## Where does the data come from?
-
-| Mode | Source | Latency | Citations |
-|---|---|---|---|
-| **Claude (default)** | Model knowledge — trained on web data through claude's cutoff. | ~30–80s for rich UIs. | none |
-| **Gemini (default)** | Model knowledge — gemini-3-flash-preview's training data. | ~5–10s. | none |
-| **Gemini + grounding** | Live Google Search results, fetched per turn. | +2-3s. | yes, shown in UI |
-
-For "real" data, set `GEMINI_GROUNDING=true` and use Gemini. The agent will ground its
-UI in actual current web results and surface citations under each rendered turn. Without
-grounding, both providers happily hallucinate plausible-looking data ("Shibuya Sky tickets — $40")
-based on training. That's fine for demos; it's not fine for booking.
+```bash
+npm run smoke:gemini             # default model-only run
+GEMINI_GROUNDING=true npm run smoke:gemini "trending AI papers today"
+```
 
 ## Files
 
-- `src/lib/dsl.ts` — Zod DSL (single source of truth) + alias coercion for model drift
-- `src/lib/json-schema.ts` — JSON Schema export (currently unused — see note below)
-- `src/lib/system-prompt.ts` — the prompt that teaches the model the DSL
-- `src/lib/extract-json.ts` — robust JSON extractor for occasional model drift
+- `src/lib/dsl.ts` — Zod DSL (24 node types, single source of truth) + alias coercion
+- `src/lib/system-prompt.ts` — render-only system prompt with field-name reference
+- `src/lib/extract-json.ts` — robust JSON extractor (fenced blocks, brace-matched)
 - `src/lib/llm.ts` — provider abstraction
-- `src/lib/providers/claude.ts` — spawn wrapper around `claude -p`
-- `src/lib/providers/gemini.ts` — fetch wrapper around Gemini API
+- `src/lib/providers/gemini.ts` — fetch wrapper around Generative Language v1beta
 - `src/app/api/turn/route.ts` — server route (one round-trip per turn)
-- `src/components/genui/Renderer.tsx` — recursive React renderer
-- `src/components/ChatInput.tsx` — bottom input
-- `src/components/ProviderPicker.tsx` — header model toggle
+- `src/components/genui/Renderer.tsx` — recursive React renderer for all 24 nodes
+- `src/components/ChatInput.tsx` — text + mic (Web Speech) input
 - `src/components/Hero.tsx` — landing-screen demo prompts
-- `scripts/smoke-claude.ts`, `scripts/smoke-gemini.ts` — provider smoke tests
+- `src/components/ProviderPicker.tsx` — header grounding toggle
+- `scripts/smoke-gemini.ts` — end-to-end smoke test against the live API
+- `scripts/dump-gemini-grounding.ts` — utility to inspect raw `groundingMetadata`
 
-> **Note on `--json-schema`.** The claude CLI's `--json-schema` flag turned out to be
-> soft validation, not enforcement. It silently accepted prose responses. We instead use
-> a strict system prompt + `extractJson` fallback + Zod validation at the boundary.
-> Same path works for Gemini (whose `responseSchema` is OpenAPI-3, no `$ref`, no recursion).
+## Notes
+
+- **Grounding ↔ structured output tradeoff.** Gemini's `responseSchema` is OpenAPI-3 (no `$ref`, no recursion) and is incompatible with the `google_search` tool. We get the best of both by skipping `responseSchema` entirely and relying on a strict system prompt + JSON extraction + Zod validation. Output stays valid; recursion stays intact; grounding works.
+- **Session memory** is in-process (a `Map<sessionId, history[]>`). Server restarts wipe it. Fine for a hackathon demo; a real deploy would back this with Redis.
+- **Field-name drift.** Gemini occasionally returns `direction` instead of `dir`, `success` instead of `positive` for stat tones, or omits `action` on a button. The alias-coercion preprocessor in `dsl.ts` heals these silently rather than failing the turn.
